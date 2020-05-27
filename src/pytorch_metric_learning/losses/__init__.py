@@ -24,3 +24,5 @@ from .sphereface_loss import SphereFaceLoss
 from .triplet_margin_loss import TripletMarginLoss
 from .tuplet_margin_loss import TupletMarginLoss
 from .weight_regularizer_mixin import WeightRegularizerMixin
+from .ephn_loss import EPHNLoss
+from .ephn_loss2 import EPHNLoss2
