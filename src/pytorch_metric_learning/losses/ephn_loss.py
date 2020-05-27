@@ -6,87 +6,30 @@ from .base_metric_loss_function import BaseMetricLossFunction
 from ..utils import loss_and_miner_utils as lmu
 import torch
 
-def distMC(Mat_A, Mat_B, norm=1, cpu=False, sq=True):#N by F
-    N_A = Mat_A.size(0)
-    N_B = Mat_B.size(0)
-    
-    DC = Mat_A.mm(torch.t(Mat_B))
-    if cpu:
-        if sq:
-            DC[torch.D_detach_Neye(N_A).bool()] = -norm
-    else:
-        if sq:
-            DC[torch.eye(N_A).bool().cuda()] = -norm
-        
-    return DC
-    
-
-def Mat(Lvec):
-    N = Lvec.size(0)
-    Mask = Lvec.repeat(N,1)
-    Same = (Mask==Mask.t())
-    return Same.clone().fill_diagonal_(0), ~Same#same diff
-
 class EPHNLoss(BaseMetricLossFunction):
 
-    def __init__(self, s=1, **kwargs):
+    def __init__(self, s=.1, **kwargs):
         super().__init__(**kwargs)
         self.sigma = s
         self.semi = False
 
     def compute_loss(self, embeddings, labels, indices_tuple):
-        return self.nca_computation(embeddings, labels)
+        indices_tuple = lmu.convert_to_triplets(indices_tuple, labels)
+        anchor_idx, positive_idx, negative_idx = indices_tuple
+        if len(anchor_idx) == 0:
+            self.num_non_zero_triplets = 0
+            return 0
+        anchors, positives, negatives = embeddings[anchor_idx], embeddings[positive_idx], embeddings[negative_idx]
+        return self.nca(anchors, positives, negatives, labels)
             
-    def nca_computation(self, fvec_norm, Lvec):
-        N = Lvec.size(0)
-        
-        # Matrix with D_detach_Nbools to indicate whether label is equal or different
-        Same, Diff = Mat(Lvec.view(-1))
-        
-        # Similarity Matrix
-        Dist = distMC(fvec_norm,fvec_norm)
-        # print(Dist)
-        ############################################
-        # finding max similarity on same label pairs
-        D_detach_P = Dist.clone().detach()
-        D_detach_P[Diff]=-1
-        D_detach_P[D_detach_P>0.9999]=-1 # if to similar then rule out
-        V_pos, I_pos = D_detach_P.max(1)
- 
-        # prevent duplicated pairs
-        Mask_not_drop_pos = (V_pos>0)
+    def nca(self, anchors, positives, negatives, labels):
+        pos_sim = lmu.get_pairwise_mat(anchors, positives, True, False).diag()
+        neg_sim = lmu.get_pairwise_mat(anchors, negatives, True, False).diag()
 
-        # extracting pos score
-        Pos = Dist[torch.arange(0,N), I_pos]
-        Pos_log = Pos.clone().detach().cpu()
-        
-        ############################################
-        # finding max similarity on diff label pairs
-        D_detach_N = Dist.clone().detach()
-        D_detach_N[Same]=-1
-        if self.semi:
-            # more similar than the most similar POS is -1
-            D_detach_N[(D_detach_N>(V_pos.repeat(N,1).t()))&Diff]=-1 #extracting SHN
-        
-        V_neg, I_neg = D_detach_N.max(1)
-            
-        # prevent duplicated pairs
-        Mask_not_drop_neg = (V_neg>0)
-
-        # extracting neg score
-        Neg = Dist[torch.arange(0,N), I_neg]
-        Neg_log = Neg.clone().detach().cpu()
-        
-        print(Neg)
-        print(Pos)
-        # triplets
-        T = torch.stack([Pos,Neg],1)
-        Mask_not_drop = Mask_not_drop_pos&Mask_not_drop_neg
-
-        # loss
+        T = torch.stack([pos_sim,neg_sim],1)
         Prob = -F.log_softmax(T/self.sigma,dim=1)[:,0]
-        loss = Prob[Mask_not_drop].sum()
+        loss = Prob.sum()
 
-        print('loss:{:.3f} rt:{:.3f}'.format(loss.item()/N, Mask_not_drop.float().mean().item()), end='\r')
+        print('loss:{:.3f}'.format(loss.item()), end='\r')
 
         return loss
